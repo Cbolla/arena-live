@@ -5,3 +5,5 @@ prisma/*.db*
 test-results/
 playwright-report/
 artifacts/
+/config/gift-history.json
+/config/gift-history.json.tmp

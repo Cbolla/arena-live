@@ -11,7 +11,7 @@ function assetsFor(engine: Engine): ArenaAssets {
 }
 
 function samePoses(a: PoseImages = {}, b: PoseImages = {}) {
-  return (['punch', 'kick', 'sweep', 'jump'] as const).every(move => {
+  return (['punch', 'kick', 'sweep', 'jump', 'walk', 'run', 'dash'] as const).every(move => {
     const left = a[move] ?? []; const right = b[move] ?? [];
     return left.length === right.length && left.every((image, index) => image === right[index]);
   });

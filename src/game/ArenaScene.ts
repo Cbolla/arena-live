@@ -1,9 +1,9 @@
 ﻿import Phaser from 'phaser';
 import { latest } from '../lib/state';
-import type { FighterMove, Player, Snapshot } from '../../shared/types';
+import type { FighterAction, FighterMove, Player, Snapshot } from '../../shared/types';
 export const W = 1000;
 export const H = 1150;
-type FighterView = { sprite: Phaser.Physics.Arcade.Sprite; name: Phaser.GameObjects.Text; cardName: Phaser.GameObjects.Text; score: Phaser.GameObjects.Text; caption: Phaser.GameObjects.Text; label: Phaser.GameObjects.Text; lastPoints: number; lastAttack: number; lastDamage: number; attackUntil: number; damageUntil: number; attackTexture: string; damageTexture: string; poseIndices: Partial<Record<FighterMove, number>>; reaction: { x: number; y: number }; attackOffsetX: number; attackOffsetY: number; attackRotation: number; idlePhase: number };
+type FighterView = { sprite: Phaser.Physics.Arcade.Sprite; name: Phaser.GameObjects.Text; cardName: Phaser.GameObjects.Text; score: Phaser.GameObjects.Text; caption: Phaser.GameObjects.Text; label: Phaser.GameObjects.Text; lastPoints: number; lastAttack: number; lastDamage: number; attackUntil: number; damageUntil: number; attackTexture: string; damageTexture: string; poseIndices: Partial<Record<FighterAction, number>>; reaction: { x: number; y: number }; attackOffsetX: number; attackOffsetY: number; attackRotation: number; idlePhase: number; movementFrame: string };
 
 function textureKey(src: string) {
   let hash = 2166136261;
@@ -106,18 +106,18 @@ export class ArenaScene extends Phaser.Scene {
     const key = this.makePlaceholder(player);
     const x = Phaser.Math.Clamp(player.x, 160, 840);
     const sprite = this.physics.add.sprite(x, player.y || 900, key).setOrigin(.5, 1).setDepth(5 + index).setFlipX(index === 1);
-    sprite.setDisplaySize(player.fullBody ? 340 : 300, player.fullBody ? 540 : 490);
+    sprite.setDisplaySize(player.fullBody ? 285 : 250, player.fullBody ? 450 : 410);
     sprite.setCollideWorldBounds(true);
     sprite.body.setSize(150 / sprite.scaleX, 96 / sprite.scaleY).setOffset((sprite.width - 150 / sprite.scaleX) / 2, sprite.height - 96 / sprite.scaleY);
     const name = this.add.text(x, 0, '', { fontFamily: 'Arial Black, Arial', fontSize: '27px', color: '#ffffff', stroke: '#101725', strokeThickness: 6, align: 'center' }).setOrigin(.5, 1).setDepth(8);
     const cardName = this.add.text(index ? 790 : 210, 40, player.username, { fontFamily: 'Arial Black, Arial', fontSize: '27px', color: '#e9f4ff', align: 'center' }).setOrigin(.5).setDepth(16);
-    const score = this.add.text(index ? 790 : 210, 125, '0', { fontFamily: 'Arial Black, Arial', fontSize: '72px', color: '#ffffff', stroke: '#101725', strokeThickness: 4, align: 'center' }).setOrigin(.5).setDepth(13);
-    const caption = this.add.text(index ? 790 : 210, 163, 'PONTOS', { fontFamily: 'Arial', fontSize: '19px', color: '#bad2e8', align: 'center' }).setOrigin(.5).setDepth(16);
+    const score = this.add.text(index ? 790 : 210, 109, '100', { fontFamily: 'Arial Black, Arial', fontSize: '72px', color: '#ffffff', stroke: '#101725', strokeThickness: 4, align: 'center' }).setOrigin(.5).setDepth(13);
+    const caption = this.add.text(index ? 790 : 210, 151, 'VIDA', { fontFamily: 'Arial', fontSize: '18px', color: '#bad2e8', align: 'center' }).setOrigin(.5).setDepth(16);
     const label = this.add.text(x, 0, '', { fontFamily: 'Arial Black, Arial', fontSize: '28px', color: '#ffe281', stroke: '#101725', strokeThickness: 6, align: 'center' }).setOrigin(.5, 1).setDepth(8);
-    const entry: FighterView = { sprite, name, cardName, score, caption, label, lastPoints: -1, lastAttack: player.attackSequence, lastDamage: player.damageSequence, attackUntil: 0, damageUntil: 0, attackTexture: '', damageTexture: '', poseIndices: {}, reaction: { x: 0, y: 0 }, attackOffsetX: 0, attackOffsetY: 0, attackRotation: 0, idlePhase: index * Math.PI };
+    const entry: FighterView = { sprite, name, cardName, score, caption, label, lastPoints: -1, lastAttack: player.attackSequence, lastDamage: player.damageSequence, attackUntil: 0, damageUntil: 0, attackTexture: '', damageTexture: '', poseIndices: {}, reaction: { x: 0, y: 0 }, attackOffsetX: 0, attackOffsetY: 0, attackRotation: 0, idlePhase: index * Math.PI, movementFrame: '' };
     this.fighters.set(player.id, entry);
     if (player.fullBody) this.ensureImage(player.fullBody, texture => {
-      sprite.setTexture(texture).setDisplaySize(340, 540);
+      sprite.setTexture(texture).setDisplaySize(285, 450);
       sprite.body.setSize(150 / sprite.scaleX, 96 / sprite.scaleY).setOffset((sprite.width - 150 / sprite.scaleX) / 2, sprite.height - 96 / sprite.scaleY);
     });
     return entry;
@@ -151,7 +151,7 @@ export class ArenaScene extends Phaser.Scene {
     if (poseSource) this.ensureImage(poseSource, key => {
       if (view.lastAttack === player.attackSequence && this.time.now < view.attackUntil && this.time.now >= view.damageUntil) {
         view.attackTexture = key;
-        view.sprite.setTexture(key).setDisplaySize(player.fullBody ? 340 : 300, player.fullBody ? 540 : 490);
+        view.sprite.setTexture(key).setDisplaySize(player.fullBody ? 285 : 250, player.fullBody ? 450 : 410);
       }
     });
     this.tweens.killTweensOf(view);
@@ -167,7 +167,7 @@ export class ArenaScene extends Phaser.Scene {
       onComplete: () => {
         view.attackOffsetX = 0; view.attackOffsetY = 0; view.attackRotation = 0;
         view.attackUntil = 0;
-        if (view.lastAttack === player.attackSequence && this.time.now >= view.damageUntil && this.textures.exists(baseTexture)) view.sprite.setTexture(baseTexture).setDisplaySize(player.fullBody ? 340 : 300, player.fullBody ? 540 : 490);
+        if (view.lastAttack === player.attackSequence && this.time.now >= view.damageUntil && this.textures.exists(baseTexture)) view.sprite.setTexture(baseTexture).setDisplaySize(player.fullBody ? 285 : 250, player.fullBody ? 450 : 410);
         this.tweens.add({ targets: view.label, alpha: 0, duration: 220, delay: 80 });
       },
     });
@@ -182,7 +182,7 @@ export class ArenaScene extends Phaser.Scene {
     if (player.damageImage) this.ensureImage(player.damageImage, key => {
       if (view.lastDamage === sequence && this.time.now < view.damageUntil) {
         view.damageTexture = key;
-        view.sprite.setTexture(key).setDisplaySize(player.fullBody ? 340 : 300, player.fullBody ? 540 : 490);
+        view.sprite.setTexture(key).setDisplaySize(player.fullBody ? 285 : 250, player.fullBody ? 450 : 410);
       }
     });
     view.sprite.setTint(0xff6675);
@@ -195,8 +195,40 @@ export class ArenaScene extends Phaser.Scene {
       if (view.lastDamage !== sequence) return;
       view.sprite.clearTint();
       const currentTexture = view.attackUntil > this.time.now && view.attackTexture ? view.attackTexture : baseTexture;
-      if (this.textures.exists(currentTexture)) view.sprite.setTexture(currentTexture).setDisplaySize(player.fullBody ? 340 : 300, player.fullBody ? 540 : 490);
+      if (this.textures.exists(currentTexture)) view.sprite.setTexture(currentTexture).setDisplaySize(player.fullBody ? 285 : 250, player.fullBody ? 450 : 410);
       view.damageTexture = '';
+    });
+  }
+
+  private showMovementFrame(player: Player, view: FighterView) {
+    const action = player.activeAction;
+    if (action === 'idle' || action === 'punch' || action === 'kick' || action === 'sweep') {
+      if (view.movementFrame && this.time.now >= view.damageUntil && this.time.now >= view.attackUntil) {
+        const base = player.fullBody ? textureKey(player.fullBody) : `placeholder-${player.id}`;
+        if (this.textures.exists(base)) view.sprite.setTexture(base).setDisplaySize(player.fullBody ? 285 : 250, player.fullBody ? 450 : 410);
+        view.movementFrame = '';
+      }
+      return;
+    }
+    const sources = player.poseImages?.[action]?.length
+      ? player.poseImages[action]!
+      : action === 'dash' ? player.poseImages?.run ?? [] : [];
+    if (!sources.length) {
+      if (view.movementFrame && this.time.now >= view.damageUntil) {
+        const base = player.fullBody ? textureKey(player.fullBody) : `placeholder-${player.id}`;
+        if (this.textures.exists(base)) view.sprite.setTexture(base).setDisplaySize(player.fullBody ? 285 : 250, player.fullBody ? 450 : 410);
+        view.movementFrame = '';
+      }
+      return;
+    }
+    const frame = sources[Math.floor(this.time.now / (action === 'dash' ? 75 : 135)) % sources.length];
+    const key = textureKey(frame);
+    if (view.movementFrame === key) return;
+    view.movementFrame = key;
+    this.ensureImage(frame, texture => {
+      if (view.movementFrame === key && player.activeAction === action && this.time.now < player.actionUntil && this.time.now >= view.damageUntil) {
+        view.sprite.setTexture(texture).setDisplaySize(player.fullBody ? 285 : 250, player.fullBody ? 450 : 410);
+      }
     });
   }
 
@@ -216,21 +248,25 @@ export class ArenaScene extends Phaser.Scene {
     players.forEach((player, index) => {
       const view = this.fighters.get(player.id) ?? this.createFighter(player, index);
       const targetX = Phaser.Math.Clamp(player.x, 160, 840);
-      const idling = this.time.now >= view.attackUntil && this.time.now >= view.damageUntil;
+      const idling = this.time.now >= view.attackUntil && this.time.now >= view.damageUntil && player.activeAction === 'idle';
       const idleBeat = this.time.now / 250 + view.idlePhase;
       const idleBob = idling ? Math.sin(idleBeat) * 10 : 0;
       const idleSway = idling ? Math.sin(idleBeat * .7) * 5 : 0;
       const idleLean = idling ? Math.sin(idleBeat * .7) * .03 : 0;
-      view.sprite.setPosition(targetX + view.attackOffsetX + view.reaction.x + idleSway, Phaser.Math.Clamp(player.y || 900, 700, 1020) + view.attackOffsetY + view.reaction.y + idleBob).setFlipX(index === 1).setRotation(view.attackRotation + idleLean);
+      const jumping = player.jumpUntil > this.time.now;
+      const jumpProgress = jumping ? Phaser.Math.Clamp(1 - (player.jumpUntil - this.time.now) / 760, 0, 1) : 0;
+      const jumpOffset = jumping ? -Math.sin(jumpProgress * Math.PI) * 125 : 0;
+      view.sprite.setPosition(targetX + view.attackOffsetX + view.reaction.x + idleSway, Phaser.Math.Clamp(player.y || 900, 700, 1020) + view.attackOffsetY + view.reaction.y + idleBob + jumpOffset).setFlipX(index === 1).setRotation(view.attackRotation + idleLean);
       view.sprite.setDepth(5 + index);
-      view.name.setText(player.username).setPosition(targetX, view.sprite.y - (player.fullBody ? 530 : 485));
-      view.label.setPosition(targetX, view.sprite.y - (player.fullBody ? 555 : 510));
-      if (view.lastPoints !== player.points) {
-        view.score.setText(player.points.toLocaleString('pt-BR'));
-        if (view.lastPoints >= 0 && player.points > view.lastPoints) this.pointsPop(targetX, view.sprite.y - 320, player.points - view.lastPoints, player.color);
-        view.lastPoints = player.points;
+      this.showMovementFrame(player, view);
+      view.name.setText(player.username).setPosition(targetX, view.sprite.y - (player.fullBody ? 445 : 405));
+      view.label.setPosition(targetX, view.sprite.y - (player.fullBody ? 470 : 430));
+      if (view.lastPoints !== player.hp) {
+        view.score.setText(player.hp.toLocaleString('pt-BR'));
+        if (view.lastPoints >= 0 && player.hp < view.lastPoints) this.pointsPop(targetX, view.sprite.y - 320, `-${view.lastPoints - player.hp}`, '#ff657c');
+        view.lastPoints = player.hp;
       }
-      this.drawCard(this.cards[index], player.color, index ? 580 : 0, player.username);
+      this.drawCard(this.cards[index], player.color, index ? 580 : 0, player.username, player.hp / player.maxHp);
       if (view.lastAttack !== player.attackSequence) this.playAttack(player, players[1 - index], view);
       if (view.lastDamage !== player.damageSequence) this.playDamageReaction(player, players[1 - index], view);
     });
@@ -263,15 +299,17 @@ export class ArenaScene extends Phaser.Scene {
       const [, title, winner, points, next] = this.result.list as Phaser.GameObjects.GameObject[];
       (title as Phaser.GameObjects.Text).setText('VENCEDOR DA LUTA');
       (winner as Phaser.GameObjects.Text).setText(state.winner.name === 'Empate' ? 'EMPATE!' : state.winner.name);
-      (points as Phaser.GameObjects.Text).setText(`${state.winner.damage.toLocaleString('pt-BR')} PONTOS`);
+      (points as Phaser.GameObjects.Text).setText(`${state.winner.damage.toLocaleString('pt-BR')} VIDA RESTANTE`);
       (next as Phaser.GameObjects.Text).setText(`Próxima luta em ${Math.ceil(state.nextRoundIn)}s`);
       this.result.setVisible(true);
     } else this.result.setVisible(false);
   }
 
-  private drawCard(graphics: Phaser.GameObjects.Graphics, color: string, x: number, name: string) {
+  private drawCard(graphics: Phaser.GameObjects.Graphics, color: string, x: number, name: string, health: number) {
     const tint = Phaser.Display.Color.HexStringToColor(color).color;
     graphics.clear().fillStyle(0x101725, .93).fillRoundedRect(x + 3, 3, 414, 182, 8).lineStyle(7, tint, 1).strokeRoundedRect(x + 4, 4, 412, 182, 8);
+    graphics.fillStyle(0x293342, 1).fillRoundedRect(x + 26, 169, 370, 13, 6);
+    graphics.fillStyle(health > .35 ? 0x5de98a : 0xff5269, 1).fillRoundedRect(x + 26, 169, 370 * Phaser.Math.Clamp(health, 0, 1), 13, 6);
     const view = [...this.fighters.values()].find(item => item.score.x === (x ? 790 : 210));
     if (view) view.cardName.setText(name).setPosition(x + 210, 40).setDepth(16);
   }

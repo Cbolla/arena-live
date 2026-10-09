@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { EventType, isStreakOver, TikTokLiveClient } from 'piratetok-live-js';
-import type { GiftData } from 'piratetok-live-js';
+import { ControlEvent, TikTokLiveConnection, WebcastEvent } from 'tiktok-live-connector';
 import type { Gift, LiveEvent } from '../../shared/types';
 import type { EventGateway } from './events';
 
@@ -23,8 +22,10 @@ function canonicalGiftName(value: unknown) {
 }
 
 export function matchTikTokGift(gifts: Gift[], providerId: string, providerName: unknown) {
-  return gifts.find(gift => gift.tiktokGiftId && gift.tiktokGiftId === providerId)
-    ?? gifts.find(gift => !gift.tiktokGiftId && canonicalGiftName(gift.name) === canonicalGiftName(providerName));
+  const exactId = gifts.find(gift => gift.tiktokGiftId && gift.tiktokGiftId === providerId);
+  if (exactId) return exactId;
+  const nameMatches = gifts.filter(gift => canonicalGiftName(gift.name) === canonicalGiftName(providerName));
+  return nameMatches.length === 1 ? nameMatches[0] : undefined;
 }
 
 export function tiktokUserAvatar(user: any): string | undefined {
@@ -36,8 +37,9 @@ export function tiktokUserAvatar(user: any): string | undefined {
   return undefined;
 }
 
+type GiftData = { gift?: { type?: number }; giftDetails?: { giftType?: number }; repeatEnd?: number; repeatCount?: number; groupId?: string };
 export function isFinalTikTokGift(data: GiftData) {
-  return isStreakOver(data);
+  return Number(data.gift?.type ?? data.giftDetails?.giftType ?? 0) !== 1 || Number(data.repeatEnd ?? 0) === 1;
 }
 
 /** TikTok reports running totals for combo gifts, sometimes without a final event. */
@@ -45,7 +47,7 @@ export class TikTokGiftCounter {
   private streaks = new Map<string, { total: number; at: number }>();
   reset() { this.streaks.clear(); }
   count(data: GiftData, senderId: string, giftId: string, now = Date.now()) {
-    if (Number(data.gift?.type ?? 0) !== 1) return { count: 1, id: '' };
+    if (Number(data.gift?.type ?? data.giftDetails?.giftType ?? 0) !== 1) return { count: 1, id: '' };
     const total = Math.max(1, Math.floor(Number(data.repeatCount ?? 1)));
     const groupId = String(data.groupId ?? '');
     const key = `${senderId}:${giftId}:${groupId && groupId !== '0' ? groupId : 'fallback'}`;
@@ -59,7 +61,7 @@ export class TikTokGiftCounter {
 }
 
 export class TikTokLiveAdapter {
-  private connection: TikTokLiveClient | null = null;
+  private connection: TikTokLiveConnection | null = null;
   private giftCounter = new TikTokGiftCounter();
   private current: TikTokConnectionStatus = { status: 'disconnected', username: '', roomId: '', message: '', gifts: [] };
 
@@ -72,7 +74,7 @@ export class TikTokLiveAdapter {
     const uniqueId = username.trim().replace(/^@/, '');
     if (!uniqueId) throw new Error('Informe o @usuário da conta que está ao vivo.');
 
-    const connection = new TikTokLiveClient(uniqueId).maxRetries(8);
+    const connection = new TikTokLiveConnection(uniqueId, {});
     this.connection = connection;
     this.current = { status: 'connecting', username: uniqueId, roomId: '', message: 'Procurando a LIVE pública…', gifts: [] };
 
@@ -83,35 +85,35 @@ export class TikTokLiveAdapter {
       catch (error) { this.current.message = error instanceof Error ? error.message : 'Falha ao processar evento TikTok.'; }
     };
 
-    connection.on(EventType.connected, data => {
+    connection.on(ControlEvent.CONNECTED, data => {
       if (this.connection !== connection) return;
-      this.current.status = 'connecting';
+      this.current.status = 'connected';
       this.current.roomId = String((data as any)?.roomId ?? '');
-      this.current.message = 'LIVE encontrada. Abrindo conexão de eventos...';
+      this.current.message = 'Conectado à LIVE. Aguardando comentários e presentes…';
     });
-    connection.on(EventType.chat, data => {
+    connection.on(WebcastEvent.CHAT, data => {
       const event = data as any;
-      emit('comment', event, { text: String(event.content ?? '').slice(0, 300) });
+      emit('comment', event, { text: String(event.comment ?? event.content ?? '').slice(0, 300) });
     });
-    connection.on(EventType.join, data => emit('join', data as any));
-    connection.on(EventType.like, data => {
+    connection.on(WebcastEvent.MEMBER, data => emit('join', data as any));
+    connection.on(WebcastEvent.LIKE, data => {
       const event = data as any;
       emit('like', event, { count: Math.max(1, Math.min(100, Number(event.count ?? 1))) });
     });
-    connection.on(EventType.follow, data => emit('follow', data as any));
-    connection.on(EventType.share, data => emit('share', data as any));
-    connection.on(EventType.gift, data => {
+    connection.on(WebcastEvent.FOLLOW, data => emit('follow', data as any));
+    connection.on(WebcastEvent.SHARE, data => emit('share', data as any));
+    connection.on(WebcastEvent.GIFT, data => {
       const event = data as any;
       const providerId = String(event.giftId ?? event.gift?.id ?? '');
-      const giftName = String(event.gift?.name ?? event.gift?.describe ?? '');
-      const imageUrl = event.gift?.image?.urlList?.[0];
+      const giftName = String(event.giftDetails?.giftName ?? event.gift?.name ?? event.giftDetails?.describe ?? '');
+      const imageUrl = event.giftDetails?.giftImage?.giftPictureUrl ?? event.gift?.image?.urlList?.[0];
       if (providerId && giftName && !this.current.gifts.some(item => item.id === providerId)) {
         this.current.gifts.push({ id: providerId, name: giftName, ...(imageUrl ? { imageUrl } : {}) });
       }
       const senderId = String(event.user?.userId ?? event.user?.uniqueId ?? event.user?.nickname ?? 'Visitante');
       const giftCount = this.giftCounter.count(event, senderId, providerId);
       if (!giftCount.count) return;
-      const eventId = (giftCount.id || `tiktok-gift-${String(event.common?.msgId ?? event.logId ?? randomUUID())}`).slice(0, 100);
+      const eventId = (giftCount.id || `tiktok-gift-${String(event.common?.msgId ?? event.event?.msgId ?? event.logId ?? randomUUID())}`).slice(0, 100);
       const avatar = tiktokUserAvatar(event.user);
       const configured = matchTikTokGift(this.gifts(), providerId, giftName);
       if (!configured) {
@@ -126,52 +128,32 @@ export class TikTokLiveAdapter {
       emit('gift', event, { id: eventId, giftId: configured.id, count: Math.min(giftCount.count, 10000), avatar });
     });
 
-    connection.on(EventType.reconnecting, data => {
+    connection.on(ControlEvent.ERROR, error => {
       if (this.connection !== connection) return;
-      const retry = data as any;
-      this.current.status = 'connecting';
-      this.current.message = `Reconectando à LIVE (tentativa ${retry.attempt}/${retry.maxRetries})…`;
+      const detail = (error as any)?.exception?.message ?? (error as any)?.info ?? (error instanceof Error ? error.message : String(error));
+      this.current.message = String(detail).slice(0, 240);
     });
-    connection.on('error', error => {
-      if (this.connection !== connection) return;
-      this.current.status = 'connecting';
-      this.current.message = (error instanceof Error ? error.message : String(error)).slice(0, 240);
+    connection.on(ControlEvent.DISCONNECTED, () => {
+      if (this.connection !== connection || this.current.status === 'error') return;
+      this.current.status = 'disconnected';
+      this.current.message = 'A conexão com a LIVE foi encerrada. Clique em Conectar à live para tentar novamente.';
     });
-    connection.on(EventType.disconnected, () => {
-      if (this.connection === connection && this.current.status !== 'error') {
-        this.current.status = 'disconnected';
-        this.current.message = 'A conexão com a LIVE foi encerrada.';
+
+    try {
+      const state = await connection.connect();
+      if (this.connection === connection) {
+        this.current.status = 'connected';
+        this.current.roomId = String(state.roomId ?? this.current.roomId);
+        this.current.message = 'Conectado à LIVE. Aguardando comentários e presentes…';
       }
-    });
-
-    const running = connection.connect();
-    void running.then(roomId => {
-      if (this.connection !== connection) return;
-      this.current.status = 'connected';
-      this.current.roomId = String(roomId || this.current.roomId);
-      this.current.message = 'Conectado à LIVE. Aguardando comentários e presentes…';
-    }).catch(error => {
-      if (this.connection !== connection) return;
-      this.current.status = 'error';
-      this.current.message = (error instanceof Error ? error.message : 'Não foi possível conectar à LIVE.').slice(0, 240);
-    });
-
-    return new Promise<TikTokConnectionStatus>((resolve, reject) => {
-      const check = setInterval(() => {
-        if (this.current.status === 'connected' || this.current.status === 'error') {
-          clearInterval(check);
-          clearTimeout(timeout);
-          if (this.current.status === 'error' && !this.current.roomId) reject(new Error(this.current.message));
-          else resolve(this.status());
-        }
-      }, 100);
-      const timeout = setTimeout(() => {
-        if (this.current.status === 'connecting') {
-          clearInterval(check);
-          resolve(this.status());
-        }
-      }, 15_000);
-    });
+      return this.status();
+    } catch (error) {
+      if (this.connection === connection) {
+        this.current.status = 'error';
+        this.current.message = (error instanceof Error ? error.message : 'Não foi possível conectar à LIVE.').slice(0, 240);
+      }
+      throw error;
+    }
   }
 
   async disconnect() {
@@ -180,7 +162,7 @@ export class TikTokLiveAdapter {
     this.giftCounter.reset();
     if (previous) {
       previous.removeAllListeners();
-      previous.disconnect();
+      await previous.disconnect();
     }
     this.current = { status: 'disconnected', username: '', roomId: '', message: 'TikTok desconectado.', gifts: [] };
     return this.status();

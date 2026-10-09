@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import defaults from '../config/game.json';
 import type { Config } from '../shared/types';
 import { Engine } from '../server/game/engine';
+import { scoreForMove } from '../server/combat/combat';
 import { EventGateway } from '../server/tiktok/events';
 import { periodKeys } from '../server/database/repository';
 import { configSchema } from '../server/config';
@@ -10,7 +11,7 @@ import { isFinalTikTokGift, matchTikTokGift, TikTokGiftCounter, tiktokUserAvatar
 import { Narrator } from '../server/tts/narrator';
 import { isRecentDuplicateGiftSpeech } from '../shared/speech-dedupe';
 import { withoutAssets } from '../server/websocket/socket';
-function make(random = () => .5) { const config = structuredClone(defaults) as unknown as Config; config.eventInterval = 3600; config.matchDuration = 30; config.fighters.forEach(fighter => { fighter.randomAttacks = false; }); return new Engine(config, random); }
+function make(random = () => .5) { const config = structuredClone(defaults) as unknown as Config; config.autoFight = true; config.eventInterval = 3600; config.matchDuration = 30; config.fighters.forEach(fighter => { fighter.randomAttacks = false; }); return new Engine(config, random); }
 function advance(e: Engine, seconds: number) { for (let i = 0; i < seconds * 20; i++) e.tick(.05); }
 test('automatic arena rotation follows the configured interval while the match is waiting', () => {
   const e = make(); e.config.arenaBackgrounds = ['scene-a', 'scene-b', 'scene-c']; e.config.arenaBackground = 'scene-b'; e.config.autoRotateArena = true; e.config.arenaRotationInterval = 10;
@@ -20,16 +21,15 @@ test('automatic arena rotation follows the configured interval while the match i
   advance(e, 10); assert.equal(e.snapshot().arenaBackground, 'scene-a'); assert.equal(e.snapshot().arenaBackgroundIndex, 0);
   e.config.autoRotateArena = false; assert.equal(e.snapshot().arenaBackground, 'scene-b'); assert.equal(e.snapshot().arenaBackgroundIndex, 1); assert.equal(e.snapshot().arenaRotationRemaining, null);
 });
-test('gifts and configured chat commands always choose non-repeating random attacks', () => {
-  const draws = [0, .26, .51]; let index = 0; const e = make(() => draws[index++ % draws.length]);
-  e.config.fighters.forEach(fighter => { fighter.randomAttacks = false; });
+test('a gift and chat command enqueue the exact configured fighter actions', () => {
+  const e = make(); e.config.fighters[0].giftMoves = { rose: 'run' }; e.config.fighters[1].chatAction = 'dash';
   const gateway = new EventGateway(e);
-  gateway.accept({ id: 'random-gift', type: 'gift', username: 'Ana', giftId: 'rose', count: 2 });
-  gateway.accept({ id: 'random-command', type: 'comment', username: 'Bia', text: '!lula' });
-  assert.deepEqual(e.players.get('fighter-azul')!.attackQueue, ['punch', 'kick']);
-  assert.deepEqual(e.players.get('fighter-rosa')!.attackQueue, ['sweep']);
+  gateway.accept({ id: 'mapped-gift', type: 'gift', username: 'Ana', giftId: 'rose', count: 2 });
+  gateway.accept({ id: 'mapped-command', type: 'comment', username: 'Bia', text: '!lula' });
+  assert.deepEqual(e.players.get('fighter-azul')!.attackQueue, ['run', 'run']);
+  assert.deepEqual(e.players.get('fighter-rosa')!.attackQueue, ['dash']);
   assert.equal(e.players.get('fighter-azul')!.points, e.config.gifts.find(gift => gift.id === 'rose')!.points * 2);
-  assert.equal(e.players.get('fighter-rosa')!.points, 1);
+  assert.equal(e.players.get('fighter-rosa')!.points, 0);
 });test('audience comments never create fighters; configured roster remains two', () => {
   const e = make(); let now = 10000; const g = new EventGateway(e, () => now); const ids = [...e.players.keys()];
   g.accept({ id: 'join', type: 'join', username: 'William' }); assert.equal(e.players.size, 2);
@@ -39,15 +39,34 @@ test('gifts and configured chat commands always choose non-repeating random atta
   now += 3100; g.accept({ id: '3', type: 'comment', username: 'William', text: '!atacar' });
   assert.ok([...e.players.values()].every(p => p.buffs.some(b => b.effect === 'damage')));
 });
-test('!bolsonaro and !lula award one point per vote without the comment cooldown', () => {
+test('the rose can trigger and visibly retain its configured dash pose', () => {
+  const e = make(); const fighter = e.players.get('fighter-azul')!; const dashImage = 'data:image/webp;base64,dGVzdA==';
+  e.config.fighters[0].giftMoves = { rose: 'dash' }; e.config.fighters[0].poseImages = { dash: [dashImage] };
+  e.syncFighters(); const gateway = new EventGateway(e);
+  gateway.accept({ id: 'rose-dash', type: 'gift', username: 'Ana', giftId: 'rose', count: 1 });
+  assert.deepEqual(fighter.attackQueue, ['dash']); assert.deepEqual(fighter.poseImages?.dash, [dashImage]);
+  fighter.x = 400; fighter.y = 850; fighter.attackAt = 0; fighter.invulnerableUntil = 10000; e.players.get('fighter-rosa')!.x = 800;
+  advance(e, .1);
+  assert.equal(fighter.activeAction, 'dash'); assert.equal(fighter.actionSequence, 1);
+});
+test('fighter life and per-move damage use the saved settings', () => {
+  const e = make(); const [a, b] = [...e.players.values()];
+  e.config.fighters[0].maxHp = 240; e.config.fighters[0].moveDamage = { punch: 7, kick: 31, sweep: 18, jump: 22 };
+  e.syncFighters(); e.start();
+  assert.equal(a.hp, 240); assert.equal(a.maxHp, 240);
+  assert.equal(scoreForMove(a, 'kick'), 31); assert.equal(scoreForMove(a, 'punch'), 7);
+  assert.ok(b.maxHp > 0);
+});
+test('!bolsonaro and !lula trigger their assigned actions without the comment cooldown', () => {
   const e = make(); const g = new EventGateway(e, () => 1000);
   const bolsonaro = e.players.get('fighter-azul')!; const lula = e.players.get('fighter-rosa')!;
   g.accept({ id: 'vote-bolsonaro-1', type: 'comment', username: 'Ana', text: '!bolsonaro' });
   g.accept({ id: 'vote-bolsonaro-2', type: 'comment', username: 'Ana', text: '!bolsonaro' });
   g.accept({ id: 'vote-lula', type: 'comment', username: 'Ana', text: '!lula' });
-  assert.equal(bolsonaro.points, 2); assert.equal(lula.points, 1);
+  assert.equal(bolsonaro.points, 0); assert.equal(lula.points, 0);
+  assert.deepEqual(bolsonaro.attackQueue, ['punch', 'punch']); assert.deepEqual(lula.attackQueue, ['punch']);
   assert.equal(e.phase, 'fight');
-  assert.equal(e.narrator.feed[0].text, 'Ana votou em LULA! +1 ponto.');
+  assert.match(e.narrator.feed[0].text, /Ana comandou LULA: punch/);
 });
 test('plain name mentions remain comments and do not award points', () => {
   const e = make(); const g = new EventGateway(e, () => 1000);
@@ -59,20 +78,21 @@ test('plain name mentions remain comments and do not award points', () => {
   assert.equal(bolsonaro.attackQueue.length, 0); assert.equal(lula.attackQueue.length, 0);
   assert.match(e.narrator.feed[0].text, /Caio comentou: bolsonarismo/);
 });
-test('chat commands and points are configurable per fighter and exposed in the live snapshot', () => {
+test('chat commands and actions are configurable per fighter and exposed in the live snapshot', () => {
   const e = make(); const [blue, pink] = [...e.players.values()]; const g = new EventGateway(e);
-  e.config.fighters[0].chatCommand = '!azul'; e.config.fighters[0].chatPoints = 7;
-  e.config.fighters[1].chatCommand = '!rosa'; e.config.fighters[1].chatPoints = 3;
+  e.config.fighters[0].chatCommand = '!azul'; e.config.fighters[0].chatAction = 'dash';
+  e.config.fighters[1].chatCommand = '!rosa'; e.config.fighters[1].chatAction = 'sweep';
   g.accept({ id: 'custom-blue', type: 'comment', username: 'Ana', text: '!AZUL' });
   g.accept({ id: 'custom-pink', type: 'comment', username: 'Bia', text: '!rosa' });
-  assert.equal(blue.points, 7); assert.equal(pink.points, 3);
-  assert.deepEqual(blue.attackQueue, ['sweep']); assert.deepEqual(pink.attackQueue, ['sweep']);
-  blue.x = 490; blue.y = 500; pink.x = 550; pink.y = 500;
-  blue.attackAt = 0; pink.attackAt = 0; blue.invulnerableUntil = 0; pink.invulnerableUntil = 0;
+  assert.equal(blue.points, 0); assert.equal(pink.points, 0);
+  assert.deepEqual(blue.attackQueue, ['dash']); assert.deepEqual(pink.attackQueue, ['sweep']);
+  blue.x = 490; blue.y = 850; pink.x = 550; pink.y = 850;
+  blue.attackAt = 0; pink.attackAt = 0; blue.invulnerableUntil = 10000; pink.invulnerableUntil = 10000;
   advance(e, .1);
-  assert.equal(blue.attackSequence, 1); assert.equal(pink.attackSequence, 1);
-  assert.deepEqual(e.snapshot().chatVotes.map(vote => [vote.command, vote.points]), [['!azul', 7], ['!rosa', 3]]);
-  assert.match(e.narrator.feed.find(notice => notice.text.includes('Ana'))!.text, /\+7 pontos/);
+  assert.equal(blue.actionSequence, 1); assert.equal(blue.activeAction, 'dash'); assert.notEqual(blue.x, 490);
+  assert.equal(pink.attackSequence, 1);
+  assert.deepEqual(e.snapshot().chatActions.map(item => [item.command, item.action]), [['!azul', 'dash'], ['!rosa', 'sweep']]);
+  assert.match(e.narrator.feed.find(notice => notice.text.includes('Ana'))!.text, /comandou Flavio Bolsonaro: dash/);
 });
 test('narrator replaces an in-progress comment with the latest one instead of queuing comments', () => {
   const narrator = new Narrator();
@@ -84,14 +104,15 @@ test('narrator replaces an in-progress comment with the latest one instead of qu
   assert.equal(narrator.current?.text, 'Mensagem mais nova');
   assert.equal(narrator.feed.length, 3);
 });
-test('gifts award configured points, queue non-repeating random moves, and thank the sender by voice only', () => {
+test('gifts award configured points, queue their saved move, and thank the sender by voice only', () => {
   const e = make(); const g = new EventGateway(e); const blue = e.players.get('fighter-azul')!; const pink = e.players.get('fighter-rosa')!;
   e.config.gifts.find(item => item.id === 'rose')!.points = 4;
+  e.config.fighters[0].giftMoves = { ...e.config.fighters[0].giftMoves, rose: 'punch' };
   g.accept({ id: 'rose-combo', type: 'gift', username: 'Carlos', giftId: 'rose', count: 3 });
   g.accept({ id: 'rose-combo', type: 'gift', username: 'Carlos', giftId: 'rose', count: 3 });
   assert.equal(e.phase, 'fight'); assert.equal(e.running, true);
   assert.equal(blue.points, 12); assert.equal(pink.points, 0);
-  assert.deepEqual(blue.attackQueue, ['sweep', 'kick', 'sweep']); assert.notEqual(blue.attackQueue[0], blue.attackQueue[1]); assert.notEqual(blue.attackQueue[1], blue.attackQueue[2]); assert.deepEqual(pink.attackQueue, []);
+  assert.deepEqual(blue.attackQueue, ['punch', 'punch', 'punch']); assert.deepEqual(pink.attackQueue, []);
   assert.equal(e.snapshot().lastGift?.target, blue.username);
   assert.equal(e.snapshot().lastGift?.points, 12); assert.deepEqual(e.snapshot().lastGift?.targetIds, ['fighter-azul']);
   const thanks = e.narrator.feed.find(notice => notice.kind === 'gift-voice');
@@ -107,6 +128,10 @@ test('a gift assigned to the second fighter carries only that fighter as its tar
   assert.equal(e.lastGift?.points, spark.points * 2);
   assert.equal(e.players.get(e.config.fighters[0].id)?.points, 0);
   assert.equal(e.players.get(e.config.fighters[1].id)?.points, spark.points * 2);
+});
+test('automatic rounds stay stopped when automatic fighting is disabled', () => {
+  const e = make(); e.config.autoFight = false; e.start(); e.finish(); advance(e, 10);
+  assert.equal(e.running, false); assert.equal(e.phase, 'result'); assert.equal(e.nextRoundIn, 0);
 });
 test('the latest gift sender photo replaces the presenter until the session resets', () => {
   const e = make(); const gateway = new EventGateway(e);
@@ -141,19 +166,22 @@ test('a gift without an assigned fighter reports a configuration error', () => {
   assert.equal(e.players.get('fighter-azul')!.points, 0);
   assert.equal(e.players.size, 2);
 });
-test('TikTok gifts map by saved provider ID or by normalized name when no ID is selected', () => {
+test('TikTok gifts map by saved provider ID and fall back to an unambiguous normalized name', () => {
   const gifts = structuredClone(defaults.gifts) as Config['gifts'];
   gifts[0].tiktokGiftId = '5655';
   assert.equal(matchTikTokGift(gifts, '5655', 'Another name')?.id, 'rose');
+  assert.equal(matchTikTokGift(gifts, '9', 'Rose')?.id, 'rose');
   gifts[0].tiktokGiftId = '';
   assert.equal(matchTikTokGift(gifts, '9', 'Rósa')?.id, 'rose');
   assert.equal(matchTikTokGift(gifts, '5655', 'Rose')?.id, 'rose');
   assert.equal(matchTikTokGift(gifts, '9', 'unknown'), undefined);
+  assert.equal(matchTikTokGift([...gifts, { ...gifts[0], id: 'another-rose' }], '9', 'Rose'), undefined);
 });
 test('combo gifts fire once after TikTok marks the streak final', () => {
   assert.equal(isFinalTikTokGift({ gift: { type: 1 }, repeatCount: 1, repeatEnd: 0 }), false);
   assert.equal(isFinalTikTokGift({ gift: { type: 1 }, repeatCount: 2, repeatEnd: 1 }), true);
   assert.equal(isFinalTikTokGift({ gift: { type: 0 }, repeatCount: 1, repeatEnd: 0 }), true);
+  assert.equal(isFinalTikTokGift({ giftDetails: { giftType: 1 }, repeatCount: 2, repeatEnd: 0 }), false);
 });
 test('TikTok gifts count immediately and combo updates add only the new units', () => {
   const counter = new TikTokGiftCounter();
@@ -163,6 +191,8 @@ test('TikTok gifts count immediately and combo updates add only the new units', 
   assert.equal(counter.count({ ...gift, repeatCount: 3, repeatEnd: 1 }, 'viewer', '5655').count, 0);
   assert.equal(counter.count({ ...gift, groupId: '9007199254740994', repeatCount: 1 }, 'viewer', '5655').count, 1);
   assert.equal(counter.count({ gift: { type: 0 }, repeatCount: 1 }, 'viewer', '5655').count, 1);
+  assert.equal(counter.count({ giftDetails: { giftType: 1 }, groupId: 'new-provider', repeatCount: 2 }, 'viewer', '5655').count, 2);
+  assert.equal(counter.count({ giftDetails: { giftType: 1 }, groupId: 'new-provider', repeatCount: 3 }, 'viewer', '5655').count, 1);
 });
 test('TikTok avatar extraction prefers the medium profile photo', () => {
   assert.equal(tiktokUserAvatar({ avatarThumb: { urlList: ['https://example.com/small.jpg'] }, avatarMedium: { urlList: ['https://example.com/medium.jpg'] } }), 'https://example.com/medium.jpg');
@@ -183,30 +213,61 @@ test('likes strengthen both fighters; follows drop pickups that fighters can col
 test('fighters keep separation while approaching to strike', () => {
   const e = make(); e.start(); advance(e, 8);
   const [a, b] = [...e.players.values()];
-  assert.ok(Math.hypot(a.x - b.x, a.y - b.y) >= 390);
+  assert.ok(Math.hypot(a.x - b.x, a.y - b.y) >= 149);
 });
-test('chat votes and gifts add their configured points and queue attacks', () => {
+test('a distant punch misses and a successful hit knocks the opponent back to re-approach', () => {
+  const e = make(); const [a, b] = [...e.players.values()]; e.start(); a.invulnerableUntil = 0; b.invulnerableUntil = 0;
+  a.x = 400; b.x = 800; a.y = b.y = 850; a.attackAt = 0; a.attackQueue.push('punch'); e.tick(.05);
+  assert.equal(b.hp, b.maxHp);
+  a.x = 490; b.x = 550; a.attackAt = e.time; e.tick(.05);
+  assert.ok(b.hp < b.maxHp);
+  assert.ok(Math.hypot(a.x - b.x, a.y - b.y) > 250);
+});
+test('fighters attack each other automatically with varied moves during an active round', () => {
+  const e = make(); const [a, b] = [...e.players.values()]; e.config.fighters.forEach(fighter => { fighter.randomAttacks = true; }); e.start();
+  a.x = 490; a.y = 850; b.x = 550; b.y = 850; a.invulnerableUntil = 0; b.invulnerableUntil = 0; a.attackAt = 0; b.attackAt = 0;
+  e.tick(.05);
+  assert.ok(a.attackSequence > 0); assert.ok(b.hp < b.maxHp);
+  assert.ok(Math.hypot(a.x - b.x, a.y - b.y) > 250);
+  advance(e, 5);
+  assert.ok(b.attackSequence > 0); assert.ok(a.hp < a.maxHp);
+  assert.equal(a.points, 0); assert.equal(b.points, 0);
+});
+test('gifts restore the assigned fighter life or grant a timed damage bonus', () => {
+  const e = make(); const [a, b] = [...e.players.values()]; const gateway = new EventGateway(e); e.start(); a.hp = 50;
+  Object.assign(e.config.gifts.find(gift => gift.id === 'rose')!, { effect: 'heal', amount: 10, duration: 0 });
+  Object.assign(e.config.gifts.find(gift => gift.id === 'spark')!, { effect: 'damage', amount: 20, duration: 30 });
+  gateway.accept({ id: 'heal-rose', type: 'gift', username: 'Ana', giftId: 'rose', count: 3 });
+  assert.equal(a.hp, 80);
+  e.config.gifts.find(gift => gift.id === 'rose')!.healTargetId = b.id; a.hp = 50; b.hp = 40;
+  gateway.accept({ id: 'heal-rose-selected-player', type: 'gift', username: 'Ana', giftId: 'rose', count: 3 });
+  assert.equal(a.hp, 50); assert.equal(b.hp, 70);
+  gateway.accept({ id: 'damage-spark', type: 'gift', username: 'Bia', giftId: 'spark', count: 2 });
+  assert.equal(b.buffs.find(buff => buff.effect === 'damage')?.amount, 40);
+  assert.equal(b.buffs.find(buff => buff.effect === 'damage')?.until, e.time + 30000);
+});
+test('gifts add their saved value and comments trigger configured combat actions', () => {
   const e = make(); const [a, b] = [...e.players.values()]; const gateway = new EventGateway(e); e.start();
   e.config.gifts.find(gift => gift.id === 'rose')!.points = 1;
-  a.x = 490; a.y = 500; b.x = 550; b.y = 500; a.attackAt = 0; b.invulnerableUntil = 0;
+  a.x = 490; a.y = 850; b.x = 550; b.y = 850; a.attackAt = 0; b.invulnerableUntil = 0;
   advance(e, 1); assert.equal(a.points, 0); assert.equal(b.points, 0);
   gateway.accept({ id: 'kick-rose', type: 'gift', username: 'Viewer', giftId: 'rose', targetId: a.id });
   gateway.accept({ id: 'vote-bolsonaro', type: 'comment', username: 'Viewer', text: '!bolsonaro' });
   advance(e, .1);
-  assert.equal(a.points, 2); assert.equal(b.points, 0); assert.equal(a.attackSequence, 1); assert.equal(b.damageSequence, 1);
+  assert.equal(a.points, 1); assert.equal(b.points, 0); assert.equal(a.attackSequence, 1); assert.equal(b.damageSequence, 1);
 });
-test('hits do not add score; highest chat score wins, then restarts automatically', () => {
-  const e = make(); const [a, b] = [...e.players.values()]; e.start(); a.x = 490; a.y = 500; b.x = 550; b.y = 500; a.damage = 100; a.attackAt = 0; a.attackQueue.push('punch'); b.invulnerableUntil = 0; e.tick(.05);
-  assert.equal(b.hp, b.maxHp); assert.equal(a.damageDealt, 100); assert.equal(a.points, 0);
-  a.points = 20; b.damageDealt = 10; b.points = 10; e.finish(); assert.equal(e.phase, 'result'); assert.deepEqual(e.winner, { name: a.username, damage: 20 });
+test('hits reduce life; the fighter with more life wins on timeout and the next round starts', () => {
+  const e = make(); const [a, b] = [...e.players.values()]; e.start(); a.x = 490; a.y = 850; b.x = 550; b.y = 850; a.moveDamage = { ...a.moveDamage, punch: 100 }; a.attackAt = 0; a.attackQueue.push('punch'); b.invulnerableUntil = 0; e.tick(.05);
+  assert.equal(b.hp, 1); assert.equal(a.damageDealt, 99); assert.equal(a.points, 0);
+  a.hp = 80; b.hp = 20; e.finish(); assert.equal(e.phase, 'result'); assert.deepEqual(e.winner, { name: a.username, damage: 80 });
   advance(e, 8.1); assert.equal(e.phase, 'fight'); assert.equal(e.running, true); assert.equal(e.winner, null); assert.equal(a.damageDealt, 0);
 });
 test('ties show draw; manual pause prevents an automatic new match', () => {
-  const e = make(); const [a, b] = [...e.players.values()]; a.points = b.points = 125; e.start(); a.points = b.points = 125; e.finish();
+  const e = make(); const [a, b] = [...e.players.values()]; a.hp = b.hp = 125; e.start(); a.hp = b.hp = 125; e.finish();
   assert.equal(e.winner?.name, 'Empate'); e.phase = 'paused'; e.running = false; advance(e, 10); assert.equal(e.phase, 'paused');
 });
-test('match duration ends fight at score total and roster reset preserves configured names', () => {
-  const e = make(); const [a, b] = [...e.players.values()]; e.start(); a.points = 88; b.points = 29; e.elapsed = 29.99; e.running = true; e.tick(.05);
+test('match duration ends fight by remaining life and roster reset preserves configured names', () => {
+  const e = make(); const [a, b] = [...e.players.values()]; e.start(); a.hp = 88; b.hp = 29; e.elapsed = 29.99; e.running = true; e.tick(.05);
   assert.equal(e.phase, 'result'); assert.equal(e.winner?.name, a.username); const oldSession = e.session; e.reset();
   assert.notEqual(oldSession, e.session); assert.equal(e.players.size, 2); assert.deepEqual([...e.players.values()].map(p => p.username), e.config.fighters.map(f => f.name));
 });
@@ -217,7 +278,8 @@ test('São Paulo day rollover and Monday week boundaries', () => {
 test('configuration validates exactly two unique fighters and valid gift assignments', () => {
   const e = make();
   const legacy = structuredClone(e.config) as Config; delete legacy.autoRotateArena; delete legacy.arenaRotationInterval; legacy.fighters.forEach(fighter => { delete fighter.randomAttacks; });
-  const upgraded = configSchema.parse(legacy); assert.equal(upgraded.autoRotateArena, false); assert.equal(upgraded.arenaRotationInterval, 60); assert.ok(upgraded.fighters.every(fighter => fighter.randomAttacks === true));
+  delete legacy.autoFight; legacy.fighters.forEach(fighter => { delete fighter.maxHp; delete fighter.moveDamage; });
+  const upgraded = configSchema.parse(legacy); assert.equal(upgraded.autoRotateArena, false); assert.equal(upgraded.arenaRotationInterval, 60); assert.equal(upgraded.autoFight, true); assert.ok(upgraded.fighters.every(fighter => fighter.randomAttacks === true && fighter.maxHp === 100 && fighter.moveDamage.kick === 16));
   assert.throws(() => configSchema.parse({ ...e.config, fighters: [e.config.fighters[0]] }));
   assert.throws(() => configSchema.parse({ ...e.config, fighters: e.config.fighters.map(f => ({ ...f, chatCommand: '!mesmo' })) }));
   assert.throws(() => configSchema.parse({ ...e.config, fighters: e.config.fighters.map((f, i) => i ? f : { ...f, chatPoints: 0 }) }));
@@ -225,6 +287,9 @@ test('configuration validates exactly two unique fighters and valid gift assignm
   assert.throws(() => configSchema.parse({ ...e.config, fighters: e.config.fighters.map((f, i) => i === 0 ? { ...f, giftMoves: { missing: 'kick' } } : f) }));
   assert.throws(() => configSchema.parse({ ...e.config, fighters: e.config.fighters.map(f => ({ ...f, giftIds: ['missing'] })) }));
   assert.throws(() => configSchema.parse({ ...e.config, gifts: [e.config.gifts[0], e.config.gifts[0]] }));
+  assert.equal(configSchema.parse({ ...e.config, gifts: e.config.gifts.map((gift, i) => i === 0 ? { ...gift, image: 'https://cdn.example.com/gift.png' } : gift) }).gifts[0].image, 'https://cdn.example.com/gift.png');
+  assert.equal(configSchema.parse({ ...e.config, gifts: e.config.gifts.map((gift, i) => i === 0 ? { ...gift, tiktokDiamonds: 5 } : gift) }).gifts[0].tiktokDiamonds, 5);
+  assert.throws(() => configSchema.parse({ ...e.config, gifts: e.config.gifts.map((gift, i) => i ? gift : { ...gift, healTargetId: 'missing-fighter' }) }));
   const damageImage = 'data:image/webp;base64,dGVzdA==';
   assert.equal(configSchema.parse({ ...e.config, fighters: e.config.fighters.map((f, i) => i === 0 ? { ...f, damageImage } : f) }).fighters[0].damageImage, damageImage);
 });

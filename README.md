@@ -44,7 +44,7 @@ A narração visual não depende de áudio. A arena mostra os lutadores em taman
 
 ## Estado da integração
 
-A conexão real com o TikTok ainda não está implementada. A versão atual funciona em modo simulador, sem exigir login: use os botões de teste para verificar os efeitos. O sistema não promete dinheiro ou prêmios financeiros. Os nomes e valores de presentes são exemplos editáveis; confira os IDs reais antes de criar um adaptador de live.
+Para receber comentários, curtidas e presentes de uma LIVE pública, abra **Configurações**, informe o @usuário da conta que está transmitindo e clique **Conectar à live**. O painel mostra **CONECTADO** e a sala quando o canal de eventos abre. Não é preciso informar senha nem cookies. Se a LIVE não estiver no ar ou a conexão falhar, o painel mostra o erro; confira o usuário e tente novamente. O simulador continua disponível para testar efeitos. O sistema não promete dinheiro ou prêmios financeiros. Confira os IDs reais dos presentes antes de associá-los aos lutadores.
 
 ## Desenvolvimento e testes
 

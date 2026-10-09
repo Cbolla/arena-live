@@ -9,7 +9,8 @@ import { eventId, saveConfig } from '../config';
 import { gainXp, identity } from '../players/players';
 import { activateEvent } from '../events/events';
 import type { TikTokLiveAdapter } from '../tiktok/live-adapter';
-export function adminRoutes(e: Engine, gateway: EventGateway, repo: Repository, token: string, tiktok: TikTokLiveAdapter) {
+import type { GiftCatalogScanner } from '../tiktok/gift-catalog-scanner';
+export function adminRoutes(e: Engine, gateway: EventGateway, repo: Repository, token: string, tiktok: TikTokLiveAdapter, giftScanner: GiftCatalogScanner) {
   const router = Router(); let configWriting = false;
   router.use((req, res, next) => {
     if (req.headers.origin && !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(req.headers.origin)) { res.status(403).json({ error: 'Origem não autorizada' }); return; }
@@ -20,6 +21,13 @@ export function adminRoutes(e: Engine, gateway: EventGateway, repo: Repository, 
   router.use((req, res, next) => { const key = req.ip ?? 'local'; const now = Date.now(); const current = limits.get(key); const bucket = current && now - current.at < 1000 ? current : { at: now, n: 0 }; limits.set(key, bucket); if (++bucket.n > 50) { res.status(429).json({ error: 'Muitas solicitações' }); return; } next(); });
   router.get('/config', (_req, res) => res.json(e.config));
   router.get('/tiktok/status', (_req, res) => res.json(tiktok.status()));
+  router.get('/presentes/status', (_req, res) => res.json(giftScanner.status()));
+  router.post('/presentes/connect', async (req, res, next) => {
+    try { const input = z.object({ username: usernameSchema }).parse(req.body); res.json(await giftScanner.connect(input.username)); } catch (error) { next(error); }
+  });
+  router.post('/presentes/disconnect', async (_req, res, next) => {
+    try { const input = z.object({ username: usernameSchema.optional() }).parse(_req.body); res.json(await giftScanner.disconnect(input.username)); } catch (error) { next(error); }
+  });
   router.post('/tiktok/connect', async (req, res, next) => {
     try { const input = z.object({ username: usernameSchema }).parse(req.body); res.json(await tiktok.connect(input.username)); } catch (error) { next(error); }
   });

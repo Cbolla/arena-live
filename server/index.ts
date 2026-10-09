@@ -10,6 +10,7 @@ import { Repository } from './database/repository';
 import { Engine } from './game/engine';
 import { EventGateway } from './tiktok/events';
 import { TikTokLiveAdapter } from './tiktok/live-adapter';
+import { GiftCatalogScanner } from './tiktok/gift-catalog-scanner';
 import { adminRoutes } from './admin/routes';
 import { createSocket } from './websocket/socket';
 process.env.DATABASE_URL ??= 'file:./arena.db';
@@ -17,11 +18,11 @@ const host = process.env.HOST ?? '127.0.0.1'; const port = Number(process.env.PO
 if (!['127.0.0.1', 'localhost', '::1'].includes(host) && !token) throw new Error('Defina ADMIN_TOKEN antes de expor o servidor à rede.');
 const repo = new Repository(); const engine = new Engine(await loadConfig()); await repo.start(engine.session);
 engine.onScore = delta => { void repo.score(delta).catch(() => {}); }; engine.onEnd = id => { void repo.end(id).catch(() => {}); };
-const gateway = new EventGateway(engine); const tiktok = new TikTokLiveAdapter(gateway, () => engine.config.gifts); const app = express(); app.disable('x-powered-by'); app.use(express.json({ limit: '40mb' }));
+const gateway = new EventGateway(engine); const tiktok = new TikTokLiveAdapter(gateway, () => engine.config.gifts); const giftScanner = new GiftCatalogScanner(); await giftScanner.initialize(); const app = express(); app.disable('x-powered-by'); app.use(express.json({ limit: '40mb' }));
 app.get('/api/health', (_req, res) => res.status(repo.lastError ? 503 : 200).json({ ok: !repo.lastError, source: tiktok.status().status === 'connected' ? 'tiktok' : 'simulator', tiktok: tiktok.status().status, database: repo.lastError ? 'error' : 'ready' }));
 app.get('/api/state', (_req, res) => res.json(engine.snapshot()));
 app.get('/api/ranking', async (req, res, next) => { try { const period = String(req.query.period ?? 'session'); if (!['session', 'day', 'week', 'all'].includes(period)) { res.status(400).json({ error: 'Período inválido' }); return; } res.json(await repo.ranking(period, engine.session)); } catch (error) { next(error); } });
-app.use('/api/admin', adminRoutes(engine, gateway, repo, token, tiktok));
+app.use('/api/admin', adminRoutes(engine, gateway, repo, token, tiktok, giftScanner));
 app.use('/api', (_req, res) => { res.status(404).json({ error: 'Rota não encontrada' }); });
 const dist = fileURLToPath(new URL('../dist/', import.meta.url));
 if (existsSync(dist)) { app.use(express.static(dist)); app.get('*', (_req, res) => res.sendFile(dist + '/index.html')); }
@@ -30,5 +31,5 @@ const server = createServer(app); const sockets = createSocket(server, engine); 
 const tick = setInterval(() => { const now = performance.now(); engine.tick((now - last) / 1000); last = now; }, 50);
 server.listen(port, host, () => console.log(`Arena Live: http://${host}:${port}/admin - simulador ativo`));
 let closing = false;
-async function shutdown() { if (closing) return; closing = true; clearInterval(tick); sockets.stop(); server.close(); await tiktok.disconnect(); await repo.close(); process.exit(0); }
+async function shutdown() { if (closing) return; closing = true; clearInterval(tick); sockets.stop(); server.close(); await tiktok.disconnect(); await giftScanner.disconnect(); await repo.close(); process.exit(0); }
 process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown);

@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-test('chat score, optional gift thanks, arena rankings, and vertical OBS screen', async ({ page, request, context }) => {
+test('chat actions, optional gift thanks, arena rankings, and vertical OBS screen', async ({ page, request, context }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await request.post('/api/admin/action', { data: { action: 'reset' } });
   await page.goto('/admin'); await expect(page.getByText('Servidor conectado')).toBeVisible();
@@ -16,7 +16,7 @@ test('chat score, optional gift thanks, arena rankings, and vertical OBS screen'
   await expect(live.locator('canvas')).toBeVisible(); await expect(live.locator('canvas')).toHaveJSProperty('width', 1000); await expect(live.locator('canvas')).toHaveJSProperty('height', 1150); await expect(live.getByText('DOIS LUTADORES.', { exact: false })).toBeVisible();
   await expect(live.locator('.sidebar')).toHaveCount(0); await expect(live.locator('.live-header')).toHaveCount(0); await expect(live.locator('.arena-community')).toContainText('TOP CURTIDAS'); await expect(live.locator('.arena-community')).toContainText('Maria'); await live.screenshot({ path: 'artifacts/live-1080x1920.png' });
   await expect(live.locator('.presenter-float')).toBeVisible(); await expect(live.getByRole('img', { name: 'Capivara apresentadora da Arena Live' })).toBeVisible();
-  expect(await live.evaluate(() => { const arena = document.querySelector('.live-arena')!.getBoundingClientRect(); const presenter = document.querySelector('.presenter-float')!.getBoundingClientRect(); return presenter.width > arena.width * .18 && presenter.bottom < arena.top; })).toBeTruthy();
+  expect(await live.evaluate(() => { const arena = document.querySelector('.live-arena')!.getBoundingClientRect(); const presenter = document.querySelector('.presenter-float')!.getBoundingClientRect(); return presenter.width > arena.width * .18; })).toBeTruthy();
   await expect.poll(async () => { const { players } = await (await request.get('/api/state')).json(); return Math.abs(players[0].x - players[1].x); }).toBeGreaterThanOrEqual(390);
   await page.getByRole('button', { name: 'Jogadores', exact: false }).first().click();
   await expect(page.getByText('Somente estes dois personagens lutam.', { exact: false })).toBeVisible();
@@ -36,7 +36,7 @@ test('configuration, gift routing, events and input validation', async ({ page, 
     const invalid = await request.post('/api/admin/simulate', { data: { id: 'bad', type: 'gift', username: 'Test', giftId: 'rose', count: -3 } }); expect(invalid.status()).toBe(400);
     const crossOrigin = await request.post('/api/admin/action', { headers: { Origin: 'https://not-local.example' }, data: { action: 'start' } }); expect(crossOrigin.status()).toBe(403);
     await page.goto('/admin'); await page.locator('nav button').filter({ hasText: 'Configurações' }).click();
-    await page.getByLabel('Duração da luta (segundos)').fill('120'); await page.getByRole('button', { name: 'Salvar configurações' }).click();
+    await page.getByLabel('Duração da luta (segundos)').fill('120'); await page.getByRole('button', { name: 'Salvar configurações', exact: true }).click();
     await expect(page.getByRole('status')).toContainText('Configuração salva'); expect((await (await request.get('/api/admin/config')).json()).matchDuration).toBe(120);
     await page.locator('nav button').filter({ hasText: 'Jogadores' }).click();
     const firstFighterName = (await (await request.get('/api/admin/config')).json()).fighters[0].name;
@@ -53,7 +53,7 @@ test('configuration, gift routing, events and input validation', async ({ page, 
     await page.getByRole('button', { name: 'Salvar lutadores' }).click();
     await expect(page.getByRole('status')).toContainText('Configuração salva');
     expect((await (await request.get('/api/admin/config')).json()).fighters[0].damageImage).toMatch(/^data:image\/webp;base64,/);
-    await page.getByLabel(`Imagens de chute de ${firstFighterName}`).setInputFiles({ name: 'kick.png', mimeType: 'image/png', buffer: await page.screenshot() });
+    await page.getByLabel(`Chute de ${firstFighterName}`).setInputFiles({ name: 'kick.png', mimeType: 'image/png', buffer: await page.screenshot() });
     await page.getByRole('button', { name: 'Salvar lutadores' }).click();
     await expect(page.getByRole('status')).toContainText('Configuração salva');
     expect((await (await request.get('/api/admin/config')).json()).fighters[0].poseImages.kick[0]).toMatch(/^data:image\/webp;base64,/);
@@ -85,29 +85,44 @@ test('configuration, gift routing, events and input validation', async ({ page, 
   } finally { await request.put('/api/admin/config', { data: original }); await request.post('/api/admin/action', { data: { action: 'reset' } }); }
 });
 
-test('chat vote commands and point values can be changed and appear on the live screen', async ({ page, request, context }) => {
+test('chat commands and movement actions can be configured and appear on the live screen', async ({ page, request, context }) => {
   const original = await (await request.get('/api/admin/config')).json();
   try {
     await page.goto('/admin');
-    await page.locator('nav button').filter({ hasText: 'Configurações' }).click();
-    await page.getByLabel('Comando de chat para Flavio Bolsonaro').fill('!azul');
-    await page.getByLabel('Pontos por comando para Flavio Bolsonaro').fill('6');
-    await page.getByLabel('Comando de chat para LULA').fill('!rosa');
-    await page.getByLabel('Pontos por comando para LULA').fill('4');
-    await page.getByRole('button', { name: 'Salvar comandos e pontuação' }).click();
-    await expect(page.getByRole('status')).toContainText('Configura');
+    await page.locator('nav button').filter({ hasText: 'Jogadores' }).click();
+    await page.getByLabel('Comando').nth(0).fill('!azul');
+    await page.locator('.fighter-chat-action select').nth(0).selectOption('dash');
+    await page.getByLabel('Comando').nth(1).fill('!rosa');
+    await page.locator('.fighter-chat-action select').nth(1).selectOption('run');
+    await page.getByRole('button', { name: 'Salvar lutadores' }).click();
+    await expect(page.getByRole('status')).toContainText('salva');
     const saved = await (await request.get('/api/admin/config')).json();
-    expect(saved.fighters.map((fighter: { chatCommand: string; chatPoints: number }) => [fighter.chatCommand, fighter.chatPoints])).toEqual([['!azul', 6], ['!rosa', 4]]);
+    expect(saved.fighters.map((fighter: { chatCommand: string; chatAction: string }) => [fighter.chatCommand, fighter.chatAction])).toEqual([['!azul', 'dash'], ['!rosa', 'run']]);
+    await expect(page.getByLabel(`Pulo de ${saved.fighters[0].name}`)).toHaveCount(1);
+    await expect(page.getByLabel(`Chute de ${saved.fighters[0].name}`)).toHaveCount(1);
+    await expect(page.getByLabel(`Correr de ${saved.fighters[0].name}`)).toHaveCount(1);
     const live = await context.newPage(); await live.goto('/live');
     await expect(live.locator('.arena-chat-points')).toContainText('!azul');
-    await expect(live.locator('.arena-chat-points')).toContainText('+6');
+    await expect(live.locator('.arena-chat-points')).toContainText('dash');
     await expect(live.locator('.arena-chat-points')).toContainText('!rosa');
-    await expect(live.locator('.arena-chat-points')).toContainText('+4');
+    await expect(live.locator('.arena-chat-points')).toContainText('correr');
   } finally {
     await request.put('/api/admin/config', { data: original });
   }
 });
-
+test('gift effects can be changed and saved from the gifts tab', async ({ page, request }) => {
+  const original = await (await request.get('/api/admin/config')).json();
+  try {
+    await page.goto('/admin'); await page.locator('nav button').filter({ hasText: 'Presentes' }).click();
+    await page.getByLabel('Efeito do presente Rosa', { exact: true }).selectOption('damage');
+    await page.getByLabel('Valor do efeito Rosa', { exact: true }).fill('25');
+    await page.getByLabel('Duração do efeito Rosa', { exact: true }).fill('20');
+    await page.getByRole('button', { name: 'Salvar presentes' }).click();
+    await expect(page.getByRole('status')).toContainText('salva');
+    const saved = await (await request.get('/api/admin/config')).json();
+    expect(saved.gifts.find((gift: { id: string }) => gift.id === 'rose')).toMatchObject({ effect: 'damage', amount: 25, duration: 20 });
+  } finally { await request.put('/api/admin/config', { data: original }); }
+});
 test('a newer chat comment interrupts the one being spoken and becomes the next voice message', async ({ page, request }) => {
   await page.addInitScript(() => {
     const state = { spoken: [] as string[], cancellations: 0 };

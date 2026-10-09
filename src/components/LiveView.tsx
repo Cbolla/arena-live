@@ -180,15 +180,14 @@ export function LiveView({ state: s, connected, preview = false, onPresenterPosi
         const playerIndex = s?.players.findIndex(player => player.id === targetId) ?? 0;
         return <div className={'gift-flight ' + (playerIndex === 0 ? 'to-left' : 'to-right')} key={`${giftFlight.id}-${targetId}`} aria-hidden="true">
           {giftFlight.image ? <img src={giftFlight.image} alt=""/> : <span className="gift-flight-fallback">🎁</span>}
-          {giftFlight.points > 0 && <b>+{giftFlight.points.toLocaleString('pt-BR')}</b>}
         </div>;
       })}
       {!connected && <div className="connection-banner">Reconectando ao servidor…</div>}
       <div className="arena-community">
         <section className="arena-like-ranking"><b>♥ TOP CURTIDAS</b>{s?.likeRanking?.length ? s.likeRanking.slice(0, 3).map((liker, index) => <span key={liker.username}><i>{index + 1}.</i> {liker.username} <strong>{liker.count.toLocaleString('pt-BR')}</strong></span>) : <span>Aguardando curtidas</span>}</section>
-        <section className="arena-chat-points"><b>PONTOS</b>{s?.chatVotes?.map(vote => <span key={vote.fighterId}><code>{vote.command}</code> +{vote.points}</span>)}</section>
+        <section className="arena-chat-points"><b>AÇÕES DO CHAT</b>{s?.chatActions?.map(item => <span key={item.fighterId}><code>{item.command}</code> → {({ punch: 'soco', kick: 'chute', sweep: 'rasteira', jump: 'pular', walk: 'andar', run: 'correr', dash: 'dash' } as const)[item.action]}</span>)}</section>
       </div>
-      <div className="arena-event"><span>✦</span>{s?.event?.name ?? 'Luta automática'}<small>{s?.event ? Math.max(0, Math.ceil((s.event.until - s.time) / 1000)) + 's' : 'PONTOS DECIDEM O VENCEDOR'}</small></div>
+      <div className="arena-event"><span>✦</span>{s?.event?.name ?? 'Luta automática'}<small>{s?.event ? Math.max(0, Math.ceil((s.event.until - s.time) / 1000)) + 's' : 'A VIDA DECIDE O VENCEDOR'}</small></div>
     </div>
     <div className={'narrator-line ' + (notice?.kind ?? '')} aria-live="polite"><span>◈</span><div><small>{presenterLabel}</small><p>{presenterText}</p></div></div>
   </div>;
