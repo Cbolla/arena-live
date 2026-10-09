@@ -1,0 +1,35 @@
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "sqlite"
+  url = env("DATABASE_URL")
+}
+model User {
+  id String @id
+  username String
+  avatar String @default("")
+  createdAt DateTime @default(now())
+  scores Score[]
+}
+model Session {
+  id String @id
+  startedAt DateTime @default(now())
+  endedAt DateTime?
+  scores Score[]
+}
+model Score {
+  id String @id @default(cuid())
+  userId String
+  sessionId String
+  day String
+  week String
+  points Int @default(0)
+  kills Int @default(0)
+  wins Int @default(0)
+  user User @relation(fields: [userId], references: [id])
+  session Session @relation(fields: [sessionId], references: [id])
+  @@unique([userId, sessionId, day])
+  @@index([day])
+  @@index([week])
+}
